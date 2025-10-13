@@ -267,10 +267,14 @@ int fork(void) {
   return pid;
 }
 
+static const char* state_name[] = {
+    "unused", "sleeping", "runnable", "running", "zombie"
+};
 // Pass p's abandoned children to init.
 // Caller must hold p->lock.
 void reparent(struct proc *p) {
   struct proc *pp;
+  int i = 0;
 
   for (pp = proc; pp < &proc[NPROC]; pp++) {
     // this code uses pp->parent without holding pp->lock.
@@ -282,6 +286,7 @@ void reparent(struct proc *p) {
       // because only the parent changes it, and we're the parent.
       acquire(&pp->lock);
       pp->parent = initproc;
+      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n", p->pid, i++, pp->pid, pp->name, state_name[pp->state]);
       // we should wake up init here, but that would require
       // initproc->lock, which would be a deadlock, since we hold
       // the lock on one of init's children (pp). this is why
@@ -337,6 +342,8 @@ void exit(int status) {
   acquire(&original_parent->lock);
 
   acquire(&p->lock);
+
+  exit_info("proc %d exit, parent pid %d, name %s, state %s\n", p->pid, original_parent->pid, original_parent->name, state_name[original_parent->state]);
 
   // Give any children to init.
   reparent(p);
