@@ -27,6 +27,7 @@
 
 struct {
   struct spinlock lock[NBUCKETS];
+  struct spinlock steal_lock;
   struct buf buf[NBUF];
 
   // Linked list of all buffers, through prev/next.
@@ -48,6 +49,7 @@ binit(void)
   for(int i = 0; i < NBUCKETS; ++i) {
     initlock(&bcache.lock[i], "bcache");
   }
+  initlock(&bcache.steal_lock, "bcache_steal");
   for(int i = 0; i < NBUCKETS; ++i) {
     bcache.hashbucket[i].prev = &bcache.hashbucket[i];
     bcache.hashbucket[i].next = &bcache.hashbucket[i];
@@ -84,9 +86,26 @@ bget(uint dev, uint blockno)
       return b;
     }
   }
-
+  
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
+  release(&bcache.lock[bucketno]);
+
+  acquire(&bcache.steal_lock);
+  acquire(&bcache.lock[bucketno]);
+  
+  // recheck
+  for(b = bcache.hashbucket[bucketno].next; b != &bcache.hashbucket[bucketno]; b = b->next){
+    if(b->dev == dev && b->blockno == blockno){
+      b->refcnt++;
+      release(&bcache.lock[bucketno]);
+      release(&bcache.steal_lock);
+      acquiresleep(&b->lock);
+      return b;
+    }
+  }
+
+  // self free
   for(b = bcache.hashbucket[bucketno].prev; b != &bcache.hashbucket[bucketno]; b = b->prev){
     if(b->refcnt == 0) {
       b->dev = dev;
@@ -94,12 +113,15 @@ bget(uint dev, uint blockno)
       b->valid = 0;
       b->refcnt = 1;
       release(&bcache.lock[bucketno]);
+      release(&bcache.steal_lock);
       acquiresleep(&b->lock);
       return b;
     }
   }
 
-  for(int i = (bucketno + 1) % NBUCKETS; i != bucketno; i = (i + 1) % NBUCKETS) {
+  // others free
+  for(int i = 0; i < NBUCKETS; ++i) {
+    if(i == bucketno) continue;
     acquire(&bcache.lock[i]);
     for(b = bcache.hashbucket[i].prev; b != &bcache.hashbucket[i]; b = b->prev){
       if(b->refcnt == 0) {
@@ -117,6 +139,7 @@ bget(uint dev, uint blockno)
 
         release(&bcache.lock[i]);
         release(&bcache.lock[bucketno]);
+        release(&bcache.steal_lock);
         acquiresleep(&b->lock);
         return b;
       }
