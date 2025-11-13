@@ -379,3 +379,47 @@ int test_pagetable() {
   printf("test_pagetable: %d\n", satp != gsatp);
   return satp != gsatp;
 }
+
+// return permission string of a pte
+char *perm_str(pte_t pte) {
+  static char buf[4];
+  buf[0] = (pte & PTE_R) ? 'r' : '-';
+  buf[1] = (pte & PTE_W) ? 'w' : '-';
+  buf[2] = (pte & PTE_X) ? 'x' : '-';
+  buf[3] = (pte & PTE_U) ? 'u' : '-';
+  return buf;
+}
+
+// print indent
+void print_indent(int indent) {
+  for(int i = 0; i < indent; ++i) {
+    if(i != 0) printf("    ");
+    printf("||");
+  }
+}
+
+// print pagetable recursively
+void print_pgtbl(pagetable_t pgtbl, int level, uint64 va) {
+  for(int i = 0; i < 512; ++i) {
+    pte_t pte = pgtbl[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+      // not leaf
+      print_indent(3 - level);
+      printf("idx: %d: pa: %p, flags: %s\n", i, PTE2PA(pte), perm_str(pte));
+
+      uint64 child = PTE2PA(pte);
+      uint64 cur_va = va | ((uint64)i << PXSHIFT(level));
+      print_pgtbl((pagetable_t)child, level - 1, cur_va);  // recursive
+    } else if(pte & PTE_V) {
+      // leaf
+      uint64 cur_va = va | ((uint64)i << PXSHIFT(level));
+      print_indent(3 - level);
+      printf("idx: %d: va: %p -> pa: %p, flags: %s\n", i, cur_va, PTE2PA(pte), perm_str(pte));
+    }
+  }
+}
+
+void vmprint(pagetable_t pgtbl) {
+  printf("page table %p\n", pgtbl);
+  print_pgtbl(pgtbl, 2, 0);
+}
