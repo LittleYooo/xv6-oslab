@@ -226,18 +226,20 @@ uint64 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz) {
 }
 
 // Recursively free page-table pages.
-// All leaf mappings must already have been removed.
-void freewalk(pagetable_t pagetable) {
+// flag == 0: All leaf mappings must already have been removed.
+// flag == 1: Delete leaf anyway
+void freewalk(pagetable_t pagetable, int flag) {
   // there are 2^9 = 512 PTEs in a page table.
   for (int i = 0; i < 512; i++) {
     pte_t pte = pagetable[i];
     if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
-      freewalk((pagetable_t)child);
+      freewalk((pagetable_t)child, flag);
       pagetable[i] = 0;
     } else if (pte & PTE_V) {
-      panic("freewalk: leaf");
+      if(flag) pagetable[i] = 0;
+      else panic("freewalk: leaf");
     }
   }
   kfree((void *)pagetable);
@@ -247,7 +249,7 @@ void freewalk(pagetable_t pagetable) {
 // then free page-table pages.
 void uvmfree(pagetable_t pagetable, uint64 sz) {
   if (sz > 0) uvmunmap(pagetable, 0, PGROUNDUP(sz) / PGSIZE, 1);
-  freewalk(pagetable);
+  freewalk(pagetable, 0);
 }
 
 // Given a parent process's page table, copy
@@ -422,4 +424,41 @@ void print_pgtbl(pagetable_t pgtbl, int level, uint64 va) {
 void vmprint(pagetable_t pgtbl) {
   printf("page table %p\n", pgtbl);
   print_pgtbl(pgtbl, 2, 0);
+}
+
+void proc_kvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
+  if (mappages(pagetable, va, sz, pa, perm) != 0) panic("proc_kvmmap");
+}
+
+pagetable_t proc_kpagetable() {
+  pagetable_t pagetable = (pagetable_t)kalloc();
+
+  memset(pagetable, 0, PGSIZE);
+
+  // uart registers
+  proc_kvmmap(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  proc_kvmmap(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // // CLINT
+  // proc_kvmmap(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+  // PLIC
+  proc_kvmmap(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  proc_kvmmap(pagetable, KERNBASE, KERNBASE, (uint64)etext - KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  proc_kvmmap(pagetable, (uint64)etext, (uint64)etext, PHYSTOP - (uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  proc_kvmmap(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  return pagetable;
+}
+
+void proc_freekpagetable(pagetable_t pagetable) {
+  freewalk(pagetable, 1);
 }
