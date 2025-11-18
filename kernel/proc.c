@@ -188,6 +188,27 @@ void proc_freepagetable(pagetable_t pagetable, uint64 sz) {
   uvmfree(pagetable, sz);
 }
 
+void sync_pagetable(struct proc *p) {
+  for(int i = 0; i < 512; ++i) {
+    uint64 va = (uint64)i << PXSHIFT(2);
+    if(va >= PLIC) break;
+    if((p->pagetable[i] & PTE_V) == 0) continue;
+    if((p->k_pagetable[i] & PTE_V) == 0) {
+      // create new kpagetable
+      pagetable_t pagetable;
+      if((pagetable = (pagetable_t)kalloc()) == 0) panic("sync_pagetable: kalloc");
+      memset(pagetable, 0, PGSIZE);
+      p->k_pagetable[i] = PA2PTE(pagetable) | PTE_V;  
+    }
+    uint64 sz = (PLIC - va) >> PXSHIFT(1);
+    if(sz > 512) sz = 512;
+    pagetable_t src, dst;
+    src = (pagetable_t)PTE2PA(p->pagetable[i]);
+    dst = (pagetable_t)PTE2PA(p->k_pagetable[i]);
+    memmove(dst, src, sz * sizeof(pde_t));
+  }
+}
+
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02, 0x97, 0x05, 0x00, 0x00, 0x93,
@@ -214,6 +235,8 @@ void userinit(void) {
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
+  sync_pagetable(p);
+
   p->state = RUNNABLE;
 
   release(&p->lock);
@@ -234,6 +257,7 @@ int growproc(int n) {
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
   p->sz = sz;
+  sync_pagetable(p);
   return 0;
 }
 
@@ -273,6 +297,8 @@ int fork(void) {
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
+
+  sync_pagetable(np);
 
   np->state = RUNNABLE;
 
